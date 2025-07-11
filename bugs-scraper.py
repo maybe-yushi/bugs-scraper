@@ -1,108 +1,67 @@
-from __future__ import print_function
-import os.path
-from googleapiclient.discovery import build
-from google_auth_oauthlib.flow import InstalledAppFlow
-from google.auth.transport.requests import Request
-from google.oauth2.credentials import Credentials
-from bs4 import BeautifulSoup
-from requests_html import HTMLSession
+from openpyxl import load_workbook
+from bs4 import BeautifulSoup as bs
+from urllib.request import urlopen
 
-# If changing  scopes, delete the file token.json so it can resets
-SCOPES = ['https://www.googleapis.com/auth/spreadsheets']
-
-# The ID and range of my spreadsheet.
-SPREADSHEET_ID = 'SECRET'
-RANGE_NAME = 'Artists!A2:E'
 
 def main():
-    creds = None
-    # The file token.json stores the user's access and refresh tokens, created on first run
-    if os.path.exists('token.json'):
-        creds = Credentials.from_authorized_user_file('token.json', SCOPES)
-    # If there are no (valid) credentials available, let the user log in through the browser
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
-            flow = InstalledAppFlow.from_client_secrets_file(
-                'credentials.json', SCOPES)
-            creds = flow.run_local_server(port=0)
-        # Save the credentials for the next run
-        with open('token.json', 'w') as token:
-            token.write(creds.to_json())
+    workbook = load_workbook(filename="Music Releases.xlsx")
+    # Select the active sheet
+    sh_releases = workbook["Releases"]
+    sh_artists = workbook["Artists"]
+    empty_row = len([row for row in sh_releases if any(cell.value is not None for cell in row)]) + 1
+    page = 1
+    
+    for row in sh_artists.iter_rows(min_row=2, max_row=len([row for row in sh_artists if any(cell.value is not None for cell in row)]), max_col=3):
+        url_bugs_release = "https://music.bugs.co.kr/artist/" + str(row[0].value) + "/albums?type=RELEASE"
+        webpage = urlopen(url_bugs_release)
+        html = webpage.read().decode("utf-8")
+        soup = bs(html, "html.parser")
+        page = 1
 
-    service = build('sheets', 'v4', credentials=creds)
-
-    # Call the Sheets API
-    sheet = service.spreadsheets()
-    result = sheet.values().get(spreadsheetId=SPREADSHEET_ID,
-                                range=RANGE_NAME).execute()
-    values = result.get('values', [])
-
-    if not values:
-        print('No data found.')
-    else:
-        line = 1
-        for row in values:
-            url_bugs_release = "https://music.bugs.co.kr/artist/" + row[1] + "/albums?type=RELEASE"
-            session = HTMLSession()
-            res = session.get(url_bugs_release)
-            soup = BeautifulSoup(res.html.html, "html.parser")
-            all_release = soup.find("ul", {"class": "list tileView albumList"}).findAll("li")
+        if soup.find("ul", {"class": "list tileView albumList"}) is not None:
+            all_release = soup.find("ul", {"class": "list tileView albumList"}).find_all("li")
             number_release = len(all_release)
-            page = 1
-            while number_release % 70 == 0:
+            while len(all_release) % 70 == 0:
                 page += 1
                 page_url = url_bugs_release + "&page=" + str(page)
-                session = HTMLSession()
-                res = session.get(page_url)
-                soup = BeautifulSoup(res.html.html, "html.parser")
-                all_release = soup.find("ul", {"class": "list tileView albumList"}).findAll("li")
-                number_release += len(all_release)
-            if row[2] != str(number_release):
-                batch_update_values_request_body = {
-                    "valueInputOption": "USER_ENTERED",
-                    "data": [
-                        {
-                            'range': 'Artists!C' + str(line + 1),
-                            'values': [[str(number_release)]]
-                        }
-                    ]
-                }
-                service.spreadsheets().values().batchUpdate(
-                   spreadsheetId=SPREADSHEET_ID, 
-                   body=batch_update_values_request_body
-                ).execute()
-                print("Updated number of releases for " + row[1])
-            percentage = int((line / len(values)) * 100)
-            batch_update_values_request_body = {
-                "valueInputOption": "USER_ENTERED",
-                "data": [
-                    {
-                        'range': 'Artists!I1',
-                        'values': [[str(percentage) + "%"]]
-                     }
-                  ]
-            }
-            service.spreadsheets().values().batchUpdate(
-                spreadsheetId=SPREADSHEET_ID, 
-                body=batch_update_values_request_body
-            ).execute()
-            line += 1
-        batch_update_values_request_body = {
-            "valueInputOption": "USER_ENTERED",
-            "data": [
-                {
-                    'range': 'Artists!I1',
-                    'values': [["DONE"]]
-                 }
-              ]
-        }
-        service.spreadsheets().values().batchUpdate(
-            spreadsheetId=SPREADSHEET_ID, 
-            body=batch_update_values_request_body
-        ).execute()
-        print("Finished updating!")
-        
+                webpage = urlopen(page_url)
+                html = webpage.read().decode("utf-8")
+                soup = bs(html, "html.parser")
+                all_release += soup.find("ul", {"class": "list tileView albumList"}).find_all("li")
+                number_release = len(all_release)
+            
+            for rel in all_release:
+                status = ""
+                rel_id = rel.find("figure", {"class": "albumInfo"}).get("albumid").strip()
+                for j in list(sh_releases.iter_rows(min_col=5, max_col=5, values_only=True)):
+                    if j[0] == rel_id:
+                        status = "already"
+                        break
+
+                if status != "already":
+                    sh_releases.cell(row=empty_row, column=5).value = rel_id
+                    rel_artist = row[1].value
+                    sh_releases.cell(row=empty_row, column=1).value = rel_artist
+                    rel_title = rel.find("div", {"class": "albumTitle"}).get_text().strip()
+                    sh_releases.cell(row=empty_row, column=2).value = rel_title
+                    rel_date = rel.find("time").get_text().strip()
+                    sh_releases.cell(row=empty_row, column=3).value = rel_date
+                    rel_type = rel.find("span", {"class": "albumType"}).get_text().strip()
+                    sh_releases.cell(row=empty_row, column=4).value = rel_type
+ 
+                    workbook.save("Music Releases.xlsx")
+                    print("Album " + rel_id + " added.")
+                    empty_row += 1
+                    
+            if int(row[2].value) != number_release:
+                row[2].value = number_release
+                print("Updated number of releases for " + str(row[1].value))
+                workbook.save("Music Releases.xlsx")
+        else:
+            row[2].value = "Invalid ID"
+            print("Artist " + str(row[1].value) + " has no releases.")
+    print("Finished updating!")
+    workbook.close()
+
 if __name__ == '__main__':
     main()
